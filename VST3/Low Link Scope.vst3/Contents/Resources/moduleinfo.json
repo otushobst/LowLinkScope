@@ -1,0 +1,48 @@
+{
+  "Name": "Low Link Scope",
+  "Version": "0.1.0",
+  "Factory Info": {
+    "Vendor": "Ota",
+    "URL": "",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB4F7461684C6C7363",
+      "Category": "Audio Module Class",
+      "Name": "Low Link Scope",
+      "Vendor": "Ota",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.7.12",
+      "Sub Categories": [
+        "Fx",
+        "Analyzer",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "ABCDEF011234ABCD4F7461684C6C7363",
+      "Category": "Component Controller Class",
+      "Name": "Low Link Scope",
+      "Vendor": "Ota",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.7.12",
+      "Sub Categories": [
+        "Fx",
+        "Analyzer",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+  ],
+}
