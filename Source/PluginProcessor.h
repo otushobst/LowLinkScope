@@ -14,6 +14,7 @@ namespace ParamIDs
     inline constexpr const char* linkLevel = "linkLevel";
     inline constexpr const char* zoom      = "zoom";
     inline constexpr const char* position  = "position";
+    inline constexpr const char* live      = "live";       // continuous sweep vs. hold per window
 }
 
 // Choices shared by processor and editor

@@ -44,6 +44,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout LowLinkProcessor::createLayo
     zoomRange.setSkewForCentre (4.0f);
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::zoom, 1 }, "Zoom", zoomRange, 1.0f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::position, 1 }, "Position", NormalisableRange<float> (0.0f, 1.0f), 0.0f));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::live, 1 }, "Live", true));
     return layout;
 }
 

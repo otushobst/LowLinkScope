@@ -4,55 +4,78 @@
 
 namespace
 {
+    // Draws one signal. Band-limited data (or zoomed-in views) is drawn as one
+    // continuous anti-aliased curve sampled every half pixel with linear
+    // interpolation; dense full-band data is drawn as a filled min/max envelope.
     template <typename SampleFn>
     void drawSignal (juce::Graphics& g, SampleFn sample, int start, int len, int total,
-                     juce::Rectangle<float> r, float amp)
+                     juce::Rectangle<float> r, float amp, bool smooth, juce::Colour colour)
     {
-        const int w = juce::jmax (1, static_cast<int> (r.getWidth()));
+        if (len < 2 || total < 2)
+            return;
+
+        const float w = r.getWidth();
         const float cy = r.getCentreY();
         const float half = r.getHeight() * 0.5f;
         auto toY = [&] (float v)
         {
             return juce::jlimit (r.getY(), r.getBottom(), cy - v * amp * half);
         };
+        const float samplesPerPixel = float (len) / juce::jmax (1.0f, w);
 
-        if (len < w * 2)
+        if (smooth || samplesPerPixel <= 2.0f)
         {
-            // Zoomed in: draw a continuous line.
+            const int steps = juce::jmax (2, static_cast<int> (w * 2.0f));
             juce::Path p;
-            for (int i = 0; i <= len && start + i < total; ++i)
+            p.preallocateSpace (steps * 3 + 8);
+            for (int j = 0; j <= steps; ++j)
             {
-                const float x = r.getX() + (float (i) / float (juce::jmax (1, len))) * r.getWidth();
-                const float y = toY (sample (start + i));
-                if (i == 0)
-                    p.startNewSubPath (x, y);
+                const float t = float (j) / float (steps);
+                const float fpos = float (start) + t * float (len - 1);
+                const int i0 = juce::jlimit (0, total - 1, static_cast<int> (fpos));
+                const int i1 = juce::jmin (i0 + 1, total - 1);
+                const float frac = fpos - float (i0);
+                const float v = sample (i0) + (sample (i1) - sample (i0)) * frac;
+                const float x = r.getX() + t * w;
+                if (j == 0)
+                    p.startNewSubPath (x, toY (v));
                 else
-                    p.lineTo (x, y);
+                    p.lineTo (x, toY (v));
             }
-            g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved));
+            g.setColour (colour);
+            g.strokePath (p, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             return;
         }
 
-        // Zoomed out: min/max per pixel column.
-        for (int x = 0; x < w; ++x)
+        // Dense full-band data: min/max envelope as one filled shape.
+        const int cols = juce::jmax (1, static_cast<int> (w));
+        std::vector<float> hi (static_cast<size_t> (cols)), lo (static_cast<size_t> (cols));
+        for (int x = 0; x < cols; ++x)
         {
-            const int s0 = start + static_cast<int> ((int64_t (x) * len) / w);
-            int s1 = start + static_cast<int> ((int64_t (x + 1) * len) / w);
-            s1 = juce::jmin (juce::jmax (s1, s0 + 1), total);
-            if (s0 >= total)
-                break;
-            float lo = 1.0e9f, hi = -1.0e9f;
-            for (int s = s0; s < s1; ++s)
+            const int s0 = start + static_cast<int> ((int64_t (x) * len) / cols);
+            const int s1 = juce::jmin (total, juce::jmax (s0 + 1, start + static_cast<int> ((int64_t (x + 1) * len) / cols)));
+            float mn = 1.0e9f, mx = -1.0e9f;
+            for (int s = juce::jmin (s0, total - 1); s < s1; ++s)
             {
                 const float v = sample (s);
-                lo = juce::jmin (lo, v);
-                hi = juce::jmax (hi, v);
+                mn = juce::jmin (mn, v);
+                mx = juce::jmax (mx, v);
             }
-            float y1 = toY (hi), y2 = toY (lo);
-            if (y2 - y1 < 1.0f)
-                y2 = y1 + 1.0f;
-            g.drawVerticalLine (static_cast<int> (r.getX()) + x, y1, y2);
+            hi[size_t (x)] = toY (mx);
+            lo[size_t (x)] = toY (mn);
         }
+        juce::Path env;
+        env.preallocateSpace (cols * 6 + 8);
+        env.startNewSubPath (r.getX(), hi[0]);
+        for (int x = 1; x < cols; ++x)
+            env.lineTo (r.getX() + float (x) + 0.5f, hi[size_t (x)]);
+        for (int x = cols - 1; x >= 0; --x)
+            env.lineTo (r.getX() + float (x) + 0.5f, lo[size_t (x)] + 0.6f);
+        env.closeSubPath();
+        g.setColour (colour.withMultipliedAlpha (0.55f));
+        g.fillPath (env);
+        g.setColour (colour);
+        g.strokePath (env, juce::PathStrokeType (0.8f, juce::PathStrokeType::curved));
     }
 
     float peakOf (const std::vector<float>& v)
@@ -74,7 +97,6 @@ void ScopeView::paint (juce::Graphics& g)
 
     auto r = bounds.reduced (8.0f, 22.0f);
 
-    // Centre line
     g.setColour (Colours_::grid);
     g.drawHorizontalLine (static_cast<int> (r.getCentreY()), r.getX(), r.getRight());
 
@@ -91,8 +113,9 @@ void ScopeView::paint (juce::Graphics& g)
     const int len = juce::jmax (2, static_cast<int> (std::round (visibleFrac * total)));
     const int start = juce::jlimit (0, juce::jmax (0, total - len),
                                     static_cast<int> (std::round (settings.position * (1.0f - visibleFrac) * total)));
+    auto sampleToX = [&] (double s) { return r.getX() + float ((s - start) / double (len)) * r.getWidth(); };
 
-    // Beat grid (1/16 notes, or beats if too dense)
+    // Beat grid
     {
         const double beatsTotal = frame->sizeBeats;
         const double startBeat = beatsTotal * start / total;
@@ -113,53 +136,81 @@ void ScopeView::paint (juce::Graphics& g)
 
     const auto& a = frame->a;
     const auto& b = frame->b;
+    const bool sameLen = b.size() == a.size();
     const bool showA = frame->hasA && settings.channel != 2;
-    const bool showB = frame->hasB && settings.channel != 0 && b.size() == a.size();
+    const bool showB = frame->hasB && settings.channel != 0 && sameLen;
 
-    // Conflict overlay: both waves meaningful and in opposite polarity.
-    if (frame->hasA && frame->hasB && b.size() == a.size() && settings.channel == 1)
+    // Conflict overlay: both waves meaningful and in opposite polarity, smoothed
+    // across neighbouring columns so it reads as soft bands instead of stripes.
+    if (frame->hasA && frame->hasB && sameLen && settings.channel == 1)
     {
         const float thrA = 0.08f * peakOf (a);
         const float thrB = 0.08f * peakOf (b);
-        const int w = juce::jmax (1, static_cast<int> (r.getWidth()));
-        for (int x = 0; x < w; ++x)
+        const int cols = juce::jmax (1, static_cast<int> (r.getWidth()));
+        std::vector<float> amount (static_cast<size_t> (cols), 0.0f);
+        for (int x = 0; x < cols; ++x)
         {
-            const int s0 = start + static_cast<int> ((int64_t (x) * len) / w);
-            int s1 = start + static_cast<int> ((int64_t (x + 1) * len) / w);
-            s1 = juce::jmin (juce::jmax (s1, s0 + 1), total);
+            const int s0 = start + static_cast<int> ((int64_t (x) * len) / cols);
+            const int s1 = juce::jmin (total, juce::jmax (s0 + 1, start + static_cast<int> ((int64_t (x + 1) * len) / cols)));
             int bad = 0, count = 0;
-            for (int s = s0; s < s1; ++s)
+            for (int s = juce::jmin (s0, total - 1); s < s1; ++s)
             {
                 ++count;
-                if (std::abs (a[size_t (s)]) > thrA && std::abs (b[size_t (s)]) > thrB
-                    && a[size_t (s)] * b[size_t (s)] < 0.0f)
+                const float va = a[size_t (s)], vb = b[size_t (s)];
+                if (std::abs (va) > thrA && std::abs (vb) > thrB && va * vb < 0.0f)
                     ++bad;
             }
-            if (bad > 0)
+            amount[size_t (x)] = count > 0 ? float (bad) / float (count) : 0.0f;
+        }
+        const int radius = 8;
+        for (int x = 0; x < cols; ++x)
+        {
+            float acc = 0.0f;
+            int n = 0;
+            for (int k = juce::jmax (0, x - radius); k <= juce::jmin (cols - 1, x + radius); ++k)
             {
-                g.setColour (Colours_::conflict.withAlpha (0.05f + 0.25f * float (bad) / float (count)));
-                g.drawVerticalLine (static_cast<int> (r.getX()) + x, r.getY(), r.getBottom());
+                acc += amount[size_t (k)];
+                ++n;
+            }
+            const float v = acc / float (n);
+            if (v > 0.01f)
+            {
+                g.setColour (Colours_::conflict.withAlpha (0.28f * juce::jmin (1.0f, v * 1.4f)));
+                g.fillRect (r.getX() + float (x), r.getY(), 1.0f, r.getHeight());
             }
         }
     }
 
     const float amp = settings.amp;
+    const bool smooth = frame->lowpassed;
     if (showB && settings.linkLevel > 0.0f)
-    {
-        g.setColour (Colours_::link.withAlpha (0.9f * settings.linkLevel));
-        drawSignal (g, [&] (int i) { return b[size_t (i)]; }, start, len, total, r, amp);
-    }
+        drawSignal (g, [&] (int i) { return b[size_t (i)]; }, start, len, total, r, amp, smooth,
+                    Colours_::link.withAlpha (0.92f * settings.linkLevel));
     if (showA && settings.selfLevel > 0.0f)
-    {
-        g.setColour (Colours_::self.withAlpha (0.85f * settings.selfLevel));
-        drawSignal (g, [&] (int i) { return a[size_t (i)]; }, start, len, total, r, amp);
-    }
+        drawSignal (g, [&] (int i) { return a[size_t (i)]; }, start, len, total, r, amp, smooth,
+                    Colours_::self.withAlpha (0.9f * settings.selfLevel));
     if (settings.mix && frame->hasA)
     {
-        const bool withB = frame->hasB && b.size() == a.size();
-        g.setColour (Colours_::sum.withAlpha (0.75f));
+        const bool withB = frame->hasB && sameLen;
         drawSignal (g, [&] (int i) { return a[size_t (i)] + (withB ? b[size_t (i)] : 0.0f); },
-                    start, len, total, r, amp);
+                    start, len, total, r, amp, smooth, Colours_::sum.withAlpha (0.8f));
+    }
+
+    // Live sweep head: dim the previous pass after the head, draw the head line.
+    if (frame->headFrac >= 0.0f && ! settings.frozen)
+    {
+        const float hx = sampleToX (double (frame->headFrac) * total);
+        if (hx < r.getRight())
+        {
+            const float from = juce::jmax (r.getX(), hx);
+            g.setColour (Colours_::bg.withAlpha (0.45f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (from, r.getY(), r.getRight(), r.getBottom()));
+        }
+        if (hx >= r.getX() && hx <= r.getRight())
+        {
+            g.setColour (Colours_::text.withAlpha (0.35f));
+            g.fillRect (hx - 0.5f, r.getY(), 1.0f, r.getHeight());
+        }
     }
 
     // Labels

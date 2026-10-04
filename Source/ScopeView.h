@@ -27,6 +27,8 @@ struct ScopeFrame
     double sizeBeats = 1.0;
     juce::String nameA, nameB;
     juce::String status;          // e.g. "Transport stopped - approximate"
+    float headFrac = -1.0f;       // live sweep: write head position 0..1 (-1 = none)
+    bool lowpassed = true;        // band-limited data can be drawn as a smooth curve
     lowlink::Analysis analysis;
 };
 

@@ -193,6 +193,12 @@ LowLinkEditor::LowLinkEditor (LowLinkProcessor& p)
     freezeButton.onClick = [this] { if (! freezeButton.getToggleState()) lastKey = {}; };
     addAndMakeVisible (freezeButton);
 
+    liveButton.setClickingTogglesState (true);
+    liveButton.setColour (juce::TextButton::buttonOnColourId, Colours_::self);
+    liveButton.setTooltip ("Live: continuous sweep. Off: picture updates once per window.");
+    addAndMakeVisible (liveButton);
+    liveAtt = std::make_unique<ButtonAttachment> (proc.apvts, ParamIDs::live, liveButton);
+
     setupRotary (ampSlider, Colours_::text);
     setupRotary (selfLevelSlider, Colours_::self);
     setupRotary (linkLevelSlider, Colours_::link);
@@ -215,7 +221,7 @@ LowLinkEditor::LowLinkEditor (LowLinkProcessor& p)
 
     refreshLinkList();
     syncChannelButtons();
-    startTimerHz (30);
+    startTimerHz (60);
 }
 
 LowLinkEditor::~LowLinkEditor()
@@ -321,6 +327,27 @@ void LowLinkEditor::timerCallback()
         acquire();
 }
 
+void LowLinkEditor::prepareTrack (const float* raw, int len, int dec, double sr, double lpHz,
+                                  std::vector<float>& out)
+{
+    // Box-average decimation (symmetric -> no relative phase shift between tracks),
+    // then zero-phase low-pass at the reduced rate. Keeps 60 fps drawing cheap.
+    const int n = len / dec;
+    out.resize (size_t (juce::jmax (0, n)));
+    if (dec == 1)
+        std::copy (raw, raw + n, out.begin());
+    else
+        for (int i = 0; i < n; ++i)
+        {
+            float acc = 0.0f;
+            for (int k = 0; k < dec; ++k)
+                acc += raw[i * dec + k];
+            out[size_t (i)] = acc / float (dec);
+        }
+    if (lpHz > 0.0 && n > 0)
+        lowlink::zeroPhaseLowpass (out.data(), n, sr / dec, lpHz);
+}
+
 void LowLinkEditor::acquire()
 {
     auto& bus = proc.getBus();
@@ -353,24 +380,30 @@ void LowLinkEditor::acquire()
     const int lpIdx = juce::jlimit (0, 4, choiceIndex (ParamIDs::lowpass));
     const double sizeBeats = kSizeBeats[sizeIdx];
     const double lpHz = kLowpassHz[lpIdx];
+    const bool live = proc.apvts.getRawParameterValue (ParamIDs::live)->load() > 0.5f;
 
     const double sr = self.sampleRate;
     const double bpm = juce::jlimit (20.0, 400.0, self.bpm > 0.0 ? self.bpm : 120.0);
     const double spb = sr * 60.0 / bpm;
-    const int maxLen = static_cast<int> (lowlink::kRingSize - 65536);
+    const int maxLen = static_cast<int> ((lowlink::kRingSize - 32768) / 2); // current + previous pass must fit
     const int winLen = juce::jlimit (64, maxLen, static_cast<int> (std::llround (sizeBeats * spb)));
+    const int dec = lpHz > 0.0 ? juce::jmax (1, static_cast<int> (std::floor (sr / 8000.0))) : 1;
 
     const bool selfTimeline = self.timeMode == lowlink::timeline && self.playing;
     const bool otherTimeline = haveOther && other.timeMode == lowlink::timeline && other.playing;
     const bool timeline = selfTimeline && (! haveOther || otherTimeline);
 
     juce::String status;
-    int64_t startA = 0, startB = 0;
     Key key;
     key.size = sizeBeats;
     key.lp = lpIdx;
     key.target = haveOther ? other.index : -1;
     key.timeline = timeline;
+    key.live = live;
+
+    int64_t startA = 0, startB = 0;   // first sample of the displayed window
+    int head = winLen;                 // samples of the current pass (rest = previous pass)
+    int64_t analysisStartA = -1, analysisStartB = -1;
 
     if (timeline)
     {
@@ -387,71 +420,107 @@ void LowLinkEditor::acquire()
         }
         const double ppqAtEnd = self.endPpq - double (self.endPos - endAvail) / spb;
         const double k = std::floor (ppqAtEnd / sizeBeats + 1.0e-9);
-        const double winStartPpq = (k - 1.0) * sizeBeats;
-        startA = std::llround (double (self.endPos) - (self.endPpq - winStartPpq) * spb);
-        startB = startA;
-        if (startA < 0)
+        const int64_t curStart = std::llround (double (self.endPos) - (self.endPpq - k * sizeBeats) * spb);
+        const int64_t completed = curStart - winLen;
+        if (completed < 0)
             return;
+
+        if (live)
+        {
+            startA = curStart;
+            head = static_cast<int> (juce::jlimit<int64_t> (0, winLen, endAvail - curStart));
+        }
+        else
+            startA = completed;
+        startB = startA;
+        analysisStartA = analysisStartB = completed;
+
         key.start = startA;
+        key.head = head;
         if (key == lastKey)
             return;
     }
     else
     {
         status = "Transport stopped - approximate";
-        if (lastKey.timeline == false && lastKey.size == sizeBeats && lastKey.lp == lpIdx
-            && lastKey.target == key.target && self.endPos - lastFreeRunCapture < winLen)
+        const bool sameSetup = ! lastKey.timeline && lastKey.size == sizeBeats && lastKey.lp == lpIdx
+                            && lastKey.target == key.target && lastKey.live == live;
+        if (! live && sameSetup && self.endPos - lastFreeRunCapture < winLen)
+            return;
+        if (live && sameSetup && self.endPos == lastFreeRunCapture)
             return;
         lastFreeRunCapture = self.endPos;
         startA = self.endPos - winLen;
         startB = haveOther ? other.endPos - winLen : 0;
+        analysisStartA = startA;
+        analysisStartB = startB;
         key.start = startA;
     }
     lastKey = key;
 
+    // Read [start, start+head) from the current pass and the remainder from the previous pass.
+    auto readSweep = [&] (int slotIndex, int64_t start, std::vector<float>& raw) -> int
+    {
+        raw.resize (size_t (winLen));
+        int valid = bus.readRange (slotIndex, start, head, raw.data());
+        if (head < winLen)
+            valid += bus.readRange (slotIndex, start - winLen + head, winLen - head, raw.data() + head);
+        return valid;
+    };
+
     auto f = std::make_shared<ScopeFrame>();
-    f->sampleRate = sr;
+    f->sampleRate = sr / dec;
     f->sizeBeats = sizeBeats;
+    f->lowpassed = lpHz > 0.0;
+    f->headFrac = (timeline && live) ? float (head) / float (winLen) : -1.0f;
     f->nameA = proc.getDisplayName();
     f->nameB = haveOther ? juce::String (other.name) : (targetName.isNotEmpty() ? targetName + " (offline)" : juce::String());
     f->status = status;
-    f->a.resize (size_t (winLen));
-    bus.readRange (proc.getSlot(), startA, winLen, f->a.data());
+
+    readSweep (proc.getSlot(), startA, rawA);
+    prepareTrack (rawA.data(), winLen, dec, sr, lpHz, f->a);
     f->hasA = true;
 
     if (haveOther)
     {
         if (std::abs (other.sampleRate - sr) > 0.5)
             f->status = "Sample rate mismatch";
-        f->b.resize (size_t (winLen));
-        f->hasB = bus.readRange (other.index, startB, winLen, f->b.data()) > 0;
+        f->hasB = readSweep (other.index, startB, rawB) > 0;
+        prepareTrack (rawB.data(), winLen, dec, sr, lpHz, f->b);
     }
 
-    if (lpHz > 0.0)
+    // Analysis runs on the last completed window only, so the numbers stay steady
+    // while the picture sweeps.
+    const bool analysisKeyChanged = analysisStartA != analysedStart || key.target != analysedTarget
+                                 || lpIdx != analysedLp || sizeBeats != analysedSize || ! timeline;
+    if (! haveOther)
     {
-        lowlink::zeroPhaseLowpass (f->a.data(), winLen, sr, lpHz);
-        if (f->hasB)
-            lowlink::zeroPhaseLowpass (f->b.data(), winLen, sr, lpHz);
+        cachedAnalysis = {};
+        analysedStart = -1;
     }
-
-    if (f->hasB)
+    else if (analysisKeyChanged)
     {
-        // Analyse the low end even when the display is full-range.
         const double band = lpHz > 0.0 ? lpHz : 250.0;
-        if (lpHz > 0.0)
-            f->analysis = lowlink::analyse (f->a.data(), f->b.data(), winLen, sr, band);
-        else
-        {
-            tmpA = f->a;
-            tmpB = f->b;
-            lowlink::zeroPhaseLowpass (tmpA.data(), winLen, sr, band);
-            lowlink::zeroPhaseLowpass (tmpB.data(), winLen, sr, band);
-            f->analysis = lowlink::analyse (tmpA.data(), tmpB.data(), winLen, sr, band);
-        }
+        const int adec = juce::jmax (1, static_cast<int> (std::floor (sr / 8000.0)));
+        rawA.resize (size_t (winLen));
+        rawB.resize (size_t (winLen));
+        bus.readRange (proc.getSlot(), analysisStartA, winLen, rawA.data());
+        bus.readRange (other.index, analysisStartB, winLen, rawB.data());
+        prepareTrack (rawA.data(), winLen, adec, sr, band, tmpA);
+        prepareTrack (rawB.data(), winLen, adec, sr, band, tmpB);
+        cachedAnalysis = lowlink::analyse (tmpA.data(), tmpB.data(), int (tmpA.size()), sr / adec, band);
+        analysedStart = analysisStartA;
+        analysedTarget = key.target;
+        analysedLp = lpIdx;
+        analysedSize = sizeBeats;
+        repaint (statsArea);
     }
+    f->analysis = cachedAnalysis;
 
+    const bool hadB = scope.getFrame() != nullptr && scope.getFrame()->hasB;
     scope.setFrame (f);
-    repaint (statsArea);
+    if (hadB != f->hasB)
+        repaint (statsArea);
 }
 
 void LowLinkEditor::paint (juce::Graphics& g)
@@ -587,7 +656,12 @@ void LowLinkEditor::resized()
         selfLevelSlider.setBounds (c2);
         linkLevelSlider.setBounds (c3);
     }
-    freezeButton.setBounds (panel.removeFromTop (26));
+    {
+        auto r = panel.removeFromTop (26);
+        liveButton.setBounds (r.removeFromLeft (r.getWidth() / 2 - 3));
+        r.removeFromLeft (6);
+        freezeButton.setBounds (r);
+    }
 
     // Left: scope, zoom/position, stats
     statsArea = area.removeFromBottom (54);

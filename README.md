@@ -17,7 +17,7 @@ Formáty: **VST3** (Cubase, Ableton, Reaper, Studio One, FL Studio…) a **CLAP*
 1. Vlož plugin na stopu kopáku i na stopu basy (jako insert, ideálně jako poslední v řetězci).
 2. Název stopy se převezme z DAW automaticky. Pokud ne, napiš ho do pole **THIS TRACK**.
 3. Na kopáku vyber v **COMPARE WITH** basu.
-4. Spusť přehrávání. Zobrazuje se vždy poslední celé okno (např. 1 beat), takže obraz stojí.
+4. Spusť přehrávání. V režimu **Live** se obraz plynule vykresluje v reálném čase od začátku každého okna (např. 1 beatu), takže stojí na gridu a jen ho „přepisuje" běžící hlava. Bez Live se obraz obnoví jednou za okno.
 
 | Ovládání | Co dělá |
 |---|---|
@@ -27,6 +27,7 @@ Formáty: **VST3** (Cubase, Ableton, Reaper, Studio One, FL Studio…) a **CLAP*
 | Sum | Přidá bílou vlnu součtu, tedy co z obou reálně zbyde |
 | AMP, THIS, LINKED | Výška zobrazení a intenzita každé vlny |
 | ZOOM, POSITION | Přiblížení a posun v okně |
+| Live | Plynulé vykreslování 60× za sekundu (vypnuté = obnova jednou za okno) |
 | Freeze | Zmrazí aktuální obraz, abys mohl porovnávat proti změnám |
 
 Plugin zvětšíš tahem za pravý dolní roh.
@@ -43,6 +44,7 @@ Plugin zvětšíš tahem za pravý dolní roh.
 - Audio plugin nijak nemění, jen ho čte. Má nulovou latenci.
 - Přesné zarovnání funguje při přehrávání. Když transport stojí, zobrazení je jen přibližné (upozorní na to).
 - Pokud se zobrazí „Linked track not processing", Cubase uspal plugin na tiché stopě. Vypni *Studio → Studio Setup → VST Plug-ins → Suspend VST3 plug-in processing when no audio signals are received*.
+- Čísla ve spodní liště se počítají z posledního celého okna, aby neposkakovala.
 - Najednou může běžet až 16 instancí. Všechny musí běžet na stejné vzorkovací frekvenci.
 
 ## Struktura
