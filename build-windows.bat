@@ -1,9 +1,9 @@
 @echo off
 REM Build Low Link Scope (VST3 + CLAP) on Windows.
-REM Requires: Visual Studio 2022 with "Desktop development with C++" (includes CMake) and Git.
+REM Requires: Visual Studio 2022 or newer with "Desktop development with C++" (includes CMake) and Git.
 REM Run from "x64 Native Tools Command Prompt for VS 2022" or a normal cmd if cmake is on PATH.
 
-cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake -B build -A x64
 if errorlevel 1 goto :fail
 cmake --build build --config Release --parallel
 if errorlevel 1 goto :fail

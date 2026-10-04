@@ -8,7 +8,7 @@ Formáty: **VST3** (Cubase, Ableton, Reaper, Studio One, FL Studio…) a **CLAP*
 
 **Varianta A, GitHub (nic neinstaluješ):** nahraj složku do nového repozitáře na GitHubu. Workflow v `.github/workflows/build.yml` plugin sám postaví. Hotový build stáhneš v záložce *Actions → poslední běh → Artifacts → LowLinkScope-Windows*.
 
-**Varianta B, lokálně:** nainstaluj Visual Studio 2022 s workloadem *Desktop development with C++* a Git. Pak spusť `build-windows.bat`. JUCE se stáhne automaticky.
+**Varianta B, lokálně:** nainstaluj Visual Studio 2022 nebo novější s workloadem *Desktop development with C++* a Git. Pak spusť `build-windows.bat`. JUCE se stáhne automaticky.
 
 **Instalace:** zkopíruj celou složku `Low Link Scope.vst3` do `C:\Program Files\Common Files\VST3` a v Cubase dej *Studio → VST Plug-in Manager → Rescan*.
 
